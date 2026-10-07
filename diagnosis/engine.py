@@ -1,213 +1,91 @@
-def latency_score(latency):
-
-    if latency is None:
-        return 0
-
-    if latency < 30:
-        return 20
-    elif latency < 60:
-        return 18
-    elif latency < 100:
-        return 15
-    elif latency < 150:
-        return 10
-    elif latency < 200:
-        return 5
-
-    return 2
-
-
-def packet_loss_score(loss):
-
-    if loss is None:
-        return 0
-
-    if loss == 0:
-        return 20
-    elif loss <= 2:
-        return 16
-    elif loss <= 5:
-        return 10
-
-    return 3
-
-
-def dns_score(dns_time):
-
-    if dns_time is None:
-        return 0
-
-    if dns_time < 50:
-        return 15
-    elif dns_time < 100:
-        return 12
-    elif dns_time < 200:
-        return 8
-
-    return 4
-
-
-def calculate_score(results):
-
-    score = 0
-
-    if results["internet"]["status"]:
-        score += 20
-
-    score += latency_score(
-        results["ping"].get("average")
-    )
-
-    score += packet_loss_score(
-        results["ping"].get("packet_loss")
-    )
-
-    score += dns_score(
-        results["dns"].get("time")
-    )
-
-    gateway_latency = results.get(
-        "gateway_latency"
-    )
-
-    if gateway_latency is not None:
-
-        if gateway_latency < 20:
-            score += 10
-        elif gateway_latency < 50:
-            score += 8
-        elif gateway_latency < 100:
-            score += 5
-        else:
-            score += 2
-
-    tcp_success = sum(
-        1
-        for test in results["tcp"].values()
-        if test["success"]
-    )
-
-    if tcp_success == 2:
-        score += 10
-    elif tcp_success == 1:
-        score += 5
-
-    if results["interface"]["local_ip"] != "Unavailable":
-        score += 5
-
-    return min(score, 100)
-
-
-def generate_diagnosis(results):
+def diagnose_network(results):
+    """
+    Analyze network test results and return problems,
+    possible causes, and recommendations.
+    """
 
     problems = []
     recommendations = []
 
-    internet = results["internet"]
-    ping = results["ping"]
-    dns = results["dns"]
-
-    if not internet["status"]:
-
-        problems.append(
-            "No internet connectivity detected."
+    # Internet connectivity
+    if not results.get("internet", False):
+        problems.append("Internet connection is unavailable.")
+        recommendations.append(
+            "Check your Wi-Fi/mobile connection and restart the router if needed."
         )
 
-        recommendations.extend([
-            "Check your Wi-Fi or Ethernet connection.",
-            "Restart your router if necessary.",
-            "Check whether other devices have internet access."
-        ])
+    # Latency
+    latency = results.get("latency")
 
-    else:
-
-        if ping.get("average") is not None:
-
-            if ping["average"] > 150:
-
-                problems.append(
-                    "High network latency detected."
-                )
-
-                recommendations.extend([
-                    "Check whether other devices are using heavy bandwidth.",
-                    "Move closer to the Wi-Fi router.",
-                    "Try another network for comparison."
-                ])
-
-            elif ping["average"] > 100:
-
-                problems.append(
-                    "Moderately high network latency detected."
-                )
-
-        if ping.get("packet_loss", 0) > 5:
-
+    if latency is not None:
+        if latency > 200:
             problems.append(
-                "Significant packet loss detected."
+                f"High network latency detected ({latency} ms)."
+            )
+            recommendations.append(
+                "Move closer to the router, reduce network traffic, "
+                "or check with your Internet Service Provider."
+            )
+        elif latency > 100:
+            problems.append(
+                f"Moderate network latency detected ({latency} ms)."
+            )
+            recommendations.append(
+                "Check other devices using the network and consider "
+                "reducing background downloads."
             )
 
-            recommendations.extend([
-                "Check Wi-Fi signal strength.",
-                "Restart the router.",
-                "Check for network congestion."
-            ])
+    # Packet loss
+    packet_loss = results.get("packet_loss")
 
-        elif ping.get("packet_loss", 0) > 2:
-
+    if packet_loss is not None:
+        if packet_loss >= 10:
             problems.append(
-                "Small amount of packet loss detected."
+                f"High packet loss detected ({packet_loss}%)."
+            )
+            recommendations.append(
+                "Check Wi-Fi signal strength, router stability, "
+                "and possible network congestion."
+            )
+        elif packet_loss > 0:
+            problems.append(
+                f"Some packet loss detected ({packet_loss}%)."
+            )
+            recommendations.append(
+                "Check your wireless connection and network stability."
             )
 
-        if dns.get("time") is not None:
+    # DNS
+    if not results.get("dns", False):
+        problems.append("DNS resolution is not working correctly.")
+        recommendations.append(
+            "Try changing the DNS server to a reliable server such as "
+            "Google DNS (8.8.8.8) or Cloudflare DNS (1.1.1.1)."
+        )
 
-            if dns["time"] > 200:
+    # Gateway
+    if not results.get("gateway", False):
+        problems.append("Default gateway is unreachable.")
+        recommendations.append(
+            "Check your connection to the router and restart the router."
+        )
 
-                problems.append(
-                    "DNS resolution appears slow."
-                )
+    # TCP services
+    if not results.get("tcp", False):
+        problems.append("TCP connectivity test failed.")
+        recommendations.append(
+            "Check firewall settings and verify that the network "
+            "allows outbound TCP connections."
+        )
 
-                recommendations.append(
-                    "Consider trying a different DNS server."
-                )
-
-    gateway_latency = results.get(
-        "gateway_latency"
-    )
-
-    if gateway_latency is not None:
-
-        if gateway_latency > 100:
-
-            problems.append(
-                "High latency to the local gateway detected."
-            )
-
-            recommendations.extend([
-                "Check your Wi-Fi signal.",
-                "Move closer to the router.",
-                "Restart the router."
-            ])
-
+    # No problems
     if not problems:
-
-        primary = "Your network appears healthy."
-
-        recommendations = [
-            "No major network problems were detected.",
-            "Continue monitoring your network if problems appear later."
-        ]
-
-    else:
-
-        primary = problems[0]
-
-    recommendations = list(
-        dict.fromkeys(recommendations)
-    )
+        problems.append("No major network problems detected.")
+        recommendations.append(
+            "Your network appears healthy. No immediate action is required."
+        )
 
     return {
-        "primary": primary,
         "problems": problems,
         "recommendations": recommendations
     }
