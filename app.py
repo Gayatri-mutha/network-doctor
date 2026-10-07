@@ -1,132 +1,829 @@
 import tkinter as tk
 from tkinter import messagebox, filedialog
+import socket
+import subprocess
+import platform
+import time
 import threading
 import json
+import re
 from datetime import datetime
 
-from network.connectivity import check_internet
-from network.ping_test import ping_host
-from network.dns_test import dns_test
-from network.gateway import get_gateway, ping_gateway
-from network.tcp_test import tcp_test
 
-from diagnosis.engine import calculate_score, generate_diagnosis
+# ============================================================
+# COLORS / THEME
+# ============================================================
 
+BG = "#0F172A"
+CARD = "#1E293B"
+CARD_LIGHT = "#263449"
+TEXT = "#F8FAFC"
+MUTED = "#94A3B8"
+GREEN = "#22C55E"
+RED = "#EF4444"
+YELLOW = "#F59E0B"
+BLUE = "#38BDF8"
+PURPLE = "#A78BFA"
+WHITE = "#FFFFFF"
+
+
+# ============================================================
+# NETWORK TEST FUNCTIONS
+# ============================================================
+
+def check_internet():
+    try:
+        socket.create_connection(
+            ("8.8.8.8", 53),
+            timeout=3
+        )
+        return True
+    except Exception:
+        return False
+
+
+def ping_host(host="8.8.8.8"):
+    system = platform.system().lower()
+
+    if system == "windows":
+        command = ["ping", "-4", "-n", "4", host]
+    else:
+        command = ["ping", "-4", "-c", "4", host]
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+
+        output = result.stdout
+
+        loss_match = re.search(
+            r"(\d+(?:\.\d+)?)%\s*(?:loss|packet loss)",
+            output,
+            re.IGNORECASE
+        )
+
+        packet_loss = (
+            float(loss_match.group(1))
+            if loss_match else None
+        )
+
+        latency = None
+
+        if system == "windows":
+
+            avg_match = re.search(
+                r"Average\s*=\s*(\d+)ms",
+                output,
+                re.IGNORECASE
+            )
+
+            if avg_match:
+                latency = float(
+                    avg_match.group(1)
+                )
+
+        else:
+
+            avg_match = re.search(
+                r"=\s*[\d.]+/([\d.]+)/",
+                output
+            )
+
+            if avg_match:
+                latency = float(
+                    avg_match.group(1)
+                )
+
+        return {
+            "latency": latency,
+            "packet_loss": packet_loss,
+            "raw_output": output
+        }
+
+    except Exception as e:
+
+        return {
+            "latency": None,
+            "packet_loss": None,
+            "raw_output": str(e)
+        }
+
+
+def dns_test():
+
+    start = time.time()
+
+    try:
+
+        socket.gethostbyname(
+            "google.com"
+        )
+
+        elapsed = round(
+            (time.time() - start) * 1000,
+            2
+        )
+
+        return {
+            "status": True,
+            "response_time": elapsed
+        }
+
+    except Exception:
+
+        return {
+            "status": False,
+            "response_time": None
+        }
+
+
+def get_local_ip():
+
+    try:
+
+        hostname = socket.gethostname()
+
+        ip = socket.gethostbyname(
+            hostname
+        )
+
+        if not ip.startswith("127."):
+
+            return ip
+
+        sock = socket.socket(
+            socket.AF_INET,
+            socket.SOCK_DGRAM
+        )
+
+        sock.connect(
+            ("8.8.8.8", 80)
+        )
+
+        ip = sock.getsockname()[0]
+
+        sock.close()
+
+        return ip
+
+    except Exception:
+
+        return "Unavailable"
+
+
+def get_gateway():
+
+    system = platform.system().lower()
+
+    try:
+
+        if system == "windows":
+
+            result = subprocess.run(
+                ["ipconfig"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            for line in result.stdout.splitlines():
+
+                if "Default Gateway" in line:
+
+                    parts = line.split(":")
+
+                    if len(parts) > 1:
+
+                        gateway = parts[1].strip()
+
+                        if gateway:
+                            return gateway
+
+        else:
+
+            result = subprocess.run(
+                ["ip", "route"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            match = re.search(
+                r"default via ([0-9.]+)",
+                result.stdout
+            )
+
+            if match:
+                return match.group(1)
+
+    except Exception:
+        pass
+
+    return "Unavailable"
+
+
+def gateway_ping(gateway):
+
+    if gateway == "Unavailable":
+
+        return {
+            "status": False,
+            "latency": None
+        }
+
+    result = ping_host(
+        gateway
+    )
+
+    return {
+        "status": result["latency"] is not None,
+        "latency": result["latency"]
+    }
+
+
+def tcp_test(
+    host="google.com",
+    port=443
+):
+
+    try:
+
+        start = time.time()
+
+        sock = socket.create_connection(
+            (host, port),
+            timeout=5
+        )
+
+        sock.close()
+
+        elapsed = round(
+            (time.time() - start) * 1000,
+            2
+        )
+
+        return {
+            "status": True,
+            "response_time": elapsed
+        }
+
+    except Exception:
+
+        return {
+            "status": False,
+            "response_time": None
+        }
+
+
+def get_interface_info():
+
+    return {
+        "hostname": socket.gethostname(),
+        "operating_system": platform.system(),
+        "local_ip": get_local_ip(),
+        "gateway": get_gateway()
+    }
+
+
+# ============================================================
+# TRACEROUTE
+# ============================================================
+
+def traceroute(host="8.8.8.8"):
+
+    system = platform.system().lower()
+
+    try:
+
+        if system == "windows":
+
+            command = [
+                "tracert",
+                "-4",
+                "-d",
+                "-h",
+                "12",
+                host
+            ]
+
+        else:
+
+            command = [
+                "traceroute",
+                "-4",
+                "-m",
+                "12",
+                host
+            ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+
+        output = result.stdout
+
+        if not output:
+            output = result.stderr
+
+        return output
+
+    except FileNotFoundError:
+
+        return (
+            "Traceroute command is not available "
+            "on this system."
+        )
+
+    except subprocess.TimeoutExpired:
+
+        return "Traceroute timed out."
+
+    except Exception as e:
+
+        return f"Traceroute error: {e}"
+
+
+# ============================================================
+# SCORING
+# ============================================================
+
+def latency_score(latency):
+
+    if latency is None:
+        return 0
+
+    if latency <= 30:
+        return 20
+    elif latency <= 60:
+        return 17
+    elif latency <= 100:
+        return 14
+    elif latency <= 150:
+        return 10
+    elif latency <= 250:
+        return 5
+
+    return 2
+
+
+def packet_loss_score(loss):
+
+    if loss is None:
+        return 0
+
+    if loss == 0:
+        return 20
+    elif loss <= 2:
+        return 16
+    elif loss <= 5:
+        return 12
+    elif loss <= 10:
+        return 7
+
+    return 2
+
+
+def dns_score(result):
+
+    if not result["status"]:
+        return 0
+
+    response_time = result["response_time"]
+
+    if response_time <= 50:
+        return 15
+    elif response_time <= 100:
+        return 12
+    elif response_time <= 200:
+        return 9
+
+    return 5
+
+
+def calculate_score(results):
+
+    score = 0
+
+    if results["internet"]:
+        score += 20
+
+    score += latency_score(
+        results["ping"]["latency"]
+    )
+
+    score += packet_loss_score(
+        results["ping"]["packet_loss"]
+    )
+
+    score += dns_score(
+        results["dns"]
+    )
+
+    if results["gateway"]["status"]:
+        score += 10
+
+    if results["tcp"]["status"]:
+        score += 10
+
+    if results["interface"]["local_ip"] != "Unavailable":
+        score += 5
+
+    return score
+
+
+# ============================================================
+# DIAGNOSIS
+# ============================================================
+
+def generate_diagnosis(results):
+
+    problems = []
+    causes = []
+    recommendations = []
+
+    if not results["internet"]:
+
+        problems.append(
+            "Internet connectivity is unavailable."
+        )
+
+        causes.append(
+            "The device may be disconnected "
+            "from the network."
+        )
+
+        recommendations.append(
+            "Check Wi-Fi/Ethernet connection "
+            "and router status."
+        )
+
+    latency = results["ping"]["latency"]
+
+    if latency is not None and latency > 100:
+
+        problems.append(
+            "High network latency detected."
+        )
+
+        causes.append(
+            "The connection may be congested "
+            "or the destination may be far away."
+        )
+
+        recommendations.append(
+            "Try reducing network traffic "
+            "or moving closer to the router."
+        )
+
+    loss = results["ping"]["packet_loss"]
+
+    if loss is not None and loss > 2:
+
+        problems.append(
+            "Packet loss detected."
+        )
+
+        causes.append(
+            "Packets may be getting dropped "
+            "between the device and destination."
+        )
+
+        recommendations.append(
+            "Check Wi-Fi signal strength, "
+            "cables and router stability."
+        )
+
+    if not results["dns"]["status"]:
+
+        problems.append(
+            "DNS resolution failed."
+        )
+
+        causes.append(
+            "The DNS server may be unavailable."
+        )
+
+        recommendations.append(
+            "Try a reliable DNS server such "
+            "as Google DNS or Cloudflare DNS."
+        )
+
+    if not results["gateway"]["status"]:
+
+        problems.append(
+            "Default gateway is not responding."
+        )
+
+        causes.append(
+            "The local router or gateway "
+            "may be unreachable."
+        )
+
+        recommendations.append(
+            "Check the router and local "
+            "network configuration."
+        )
+
+    if not results["tcp"]["status"]:
+
+        problems.append(
+            "TCP connection test failed."
+        )
+
+        causes.append(
+            "The service may be unreachable "
+            "or blocked by a firewall."
+        )
+
+        recommendations.append(
+            "Check firewall settings and "
+            "test another network service."
+        )
+
+    if not problems:
+
+        problems.append(
+            "No major network problems detected."
+        )
+
+        causes.append(
+            "All diagnostic tests completed successfully."
+        )
+
+        recommendations.append(
+            "Your network appears healthy."
+        )
+
+    return {
+        "problems": problems,
+        "causes": causes,
+        "recommendations": recommendations
+    }
+
+
+# ============================================================
+# APPLICATION
+# ============================================================
 
 class NetworkDoctor:
 
     def __init__(self, root):
 
         self.root = root
-        self.root.title("Network Doctor")
-        self.root.geometry("900x700")
-        self.root.resizable(False, False)
+
+        self.root.title(
+            "Network Doctor"
+        )
+
+        self.root.geometry(
+            "900x760"
+        )
+
+        self.root.configure(
+            bg=BG
+        )
+
+        self.root.resizable(
+            False,
+            False
+        )
 
         self.results = None
 
         self.setup_gui()
 
-    # --------------------------------------------------
+
+    # ========================================================
     # GUI
-    # --------------------------------------------------
+    # ========================================================
 
     def setup_gui(self):
 
-        tk.Label(
-            self.root,
-            text="🩺 NETWORK DOCTOR",
-            font=("Arial", 28, "bold")
-        ).pack(pady=(25, 5))
+        # ---------- HEADER ----------
 
-        tk.Label(
+        header = tk.Frame(
             self.root,
-            text="Diagnose Your Network Like a Doctor",
-            font=("Arial", 13)
-        ).pack()
-
-        # Health score
-        score_frame = tk.Frame(
-            self.root,
-            bd=2,
-            relief="groove",
-            padx=30,
-            pady=15
+            bg=BG
         )
 
-        score_frame.pack(pady=20)
+        header.pack(
+            fill="x",
+            pady=(25, 5)
+        )
+
+        tk.Label(
+            header,
+            text="🩺",
+            font=("Segoe UI Emoji", 32),
+            bg=BG,
+            fg=WHITE
+        ).pack()
+
+        tk.Label(
+            header,
+            text="NETWORK DOCTOR",
+            font=("Segoe UI", 26, "bold"),
+            bg=BG,
+            fg=WHITE
+        ).pack()
+
+        tk.Label(
+            header,
+            text="Diagnose your network like a doctor",
+            font=("Segoe UI", 11),
+            bg=BG,
+            fg=MUTED
+        ).pack(
+            pady=(2, 10)
+        )
+
+
+        # ---------- STATUS ----------
+
+        self.status_card = tk.Frame(
+            self.root,
+            bg=CARD,
+            height=65
+        )
+
+        self.status_card.pack(
+            fill="x",
+            padx=35,
+            pady=10
+        )
+
+        self.status_card.pack_propagate(
+            False
+        )
+
+        self.status_label = tk.Label(
+            self.status_card,
+            text="●  INTERNET STATUS: NOT TESTED",
+            font=("Segoe UI", 12, "bold"),
+            bg=CARD,
+            fg=MUTED
+        )
+
+        self.status_label.pack(
+            pady=20
+        )
+
+
+        # ---------- SCORE ----------
+
+        score_frame = tk.Frame(
+            self.root,
+            bg=CARD
+        )
+
+        score_frame.pack(
+            fill="x",
+            padx=35,
+            pady=8
+        )
 
         tk.Label(
             score_frame,
             text="NETWORK HEALTH",
-            font=("Arial", 12, "bold")
-        ).pack()
+            font=("Segoe UI", 10, "bold"),
+            bg=CARD,
+            fg=MUTED
+        ).pack(
+            pady=(18, 0)
+        )
 
-        self.health_score = tk.Label(
+        self.score_label = tk.Label(
             score_frame,
             text="-- / 100",
-            font=("Arial", 30, "bold")
+            font=("Segoe UI", 34, "bold"),
+            bg=CARD,
+            fg=WHITE
         )
 
-        self.health_score.pack()
+        self.score_label.pack(
+            pady=2
+        )
 
-        self.health_status = tk.Label(
+        self.rating_label = tk.Label(
             score_frame,
-            text="Run diagnosis to check your network",
-            font=("Arial", 11)
+            text="Run a diagnosis to calculate your score",
+            font=("Segoe UI", 11),
+            bg=CARD,
+            fg=MUTED
         )
 
-        self.health_status.pack()
-
-        # Test cards
-        self.internet_label = self.create_card(
-            "Internet",
-            "Not tested"
+        self.rating_label.pack(
+            pady=(0, 18)
         )
 
-        self.latency_label = self.create_card(
-            "Latency",
-            "Not tested"
-        )
 
-        self.packet_label = self.create_card(
-            "Packet Loss",
-            "Not tested"
-        )
+        # ---------- TEST CARDS ----------
 
-        self.dns_label = self.create_card(
-            "DNS",
-            "Not tested"
-        )
-
-        self.gateway_label = self.create_card(
-            "Gateway",
-            "Not tested"
-        )
-
-        self.tcp_label = self.create_card(
-            "TCP",
-            "Not tested"
-        )
-
-        # Progress
-        self.progress_label = tk.Label(
+        tests_frame = tk.Frame(
             self.root,
-            text="Ready",
-            font=("Arial", 10)
+            bg=BG
         )
 
-        self.progress_label.pack(pady=(10, 5))
+        tests_frame.pack(
+            padx=35,
+            pady=10
+        )
 
-        # Buttons
-        button_frame = tk.Frame(self.root)
-        button_frame.pack(pady=15)
+
+        self.test_labels = {}
+
+        tests = [
+            ("Internet", "🌐"),
+            ("Latency", "⚡"),
+            ("Packet Loss", "📦"),
+            ("DNS", "🔎"),
+            ("Gateway", "🚪"),
+            ("TCP Services", "🔗")
+        ]
+
+
+        for index, (name, icon) in enumerate(tests):
+
+            row = index // 3
+            col = index % 3
+
+            card = tk.Frame(
+                tests_frame,
+                bg=CARD_LIGHT,
+                width=250,
+                height=70
+            )
+
+            card.grid(
+                row=row,
+                column=col,
+                padx=6,
+                pady=6
+            )
+
+            card.grid_propagate(
+                False
+            )
+
+
+            tk.Label(
+                card,
+                text=icon,
+                font=("Segoe UI Emoji", 16),
+                bg=CARD_LIGHT,
+                fg=WHITE
+            ).pack(
+                side="left",
+                padx=(12, 7)
+            )
+
+
+            text_label = tk.Label(
+                card,
+                text=f"{name}\nNot tested",
+                font=("Segoe UI", 10, "bold"),
+                bg=CARD_LIGHT,
+                fg=WHITE,
+                justify="left"
+            )
+
+            text_label.pack(
+                side="left"
+            )
+
+            self.test_labels[name] = text_label
+
+
+        # ---------- BUTTONS ----------
+
+        button_frame = tk.Frame(
+            self.root,
+            bg=BG
+        )
+
+        button_frame.pack(
+            pady=12
+        )
+
 
         self.start_button = tk.Button(
             button_frame,
-            text="START DIAGNOSIS",
-            font=("Arial", 13, "bold"),
-            padx=25,
+            text="🩺  START DIAGNOSIS",
+            font=("Segoe UI", 11, "bold"),
+            bg=BLUE,
+            fg="#0F172A",
+            activebackground="#7DD3FC",
+            relief="flat",
+            padx=22,
             pady=10,
+            cursor="hand2",
             command=self.start_diagnosis
         )
 
@@ -136,12 +833,98 @@ class NetworkDoctor:
             padx=5
         )
 
-        self.save_button = tk.Button(
+
+        self.info_button = tk.Button(
             button_frame,
-            text="SAVE REPORT",
-            font=("Arial", 11),
-            padx=20,
+            text="🌐  NETWORK INFO",
+            font=("Segoe UI", 10, "bold"),
+            bg=CARD_LIGHT,
+            fg=WHITE,
+            activebackground=CARD,
+            activeforeground=WHITE,
+            relief="flat",
+            padx=18,
             pady=10,
+            cursor="hand2",
+            command=self.show_network_info
+        )
+
+        self.info_button.grid(
+            row=0,
+            column=1,
+            padx=5
+        )
+
+
+        self.trace_button = tk.Button(
+            button_frame,
+            text="🛣  TRACEROUTE",
+            font=("Segoe UI", 10, "bold"),
+            bg=CARD_LIGHT,
+            fg=WHITE,
+            activebackground=CARD,
+            activeforeground=WHITE,
+            relief="flat",
+            padx=18,
+            pady=10,
+            cursor="hand2",
+            command=self.run_traceroute
+        )
+
+        self.trace_button.grid(
+            row=0,
+            column=2,
+            padx=5
+        )
+
+
+        # ---------- SECOND BUTTON ROW ----------
+
+        second_buttons = tk.Frame(
+            self.root,
+            bg=BG
+        )
+
+        second_buttons.pack(
+            pady=3
+        )
+
+
+        self.diagnosis_button = tk.Button(
+            second_buttons,
+            text="🔍  VIEW DIAGNOSIS",
+            font=("Segoe UI", 10, "bold"),
+            bg=CARD_LIGHT,
+            fg=WHITE,
+            activebackground=CARD,
+            activeforeground=WHITE,
+            relief="flat",
+            padx=22,
+            pady=8,
+            cursor="hand2",
+            command=self.show_diagnosis,
+            state="disabled"
+        )
+
+        self.diagnosis_button.grid(
+            row=0,
+            column=0,
+            padx=5
+        )
+
+
+        self.save_button = tk.Button(
+            second_buttons,
+            text="💾  SAVE REPORT",
+            font=("Segoe UI", 10, "bold"),
+            bg=CARD_LIGHT,
+            fg=WHITE,
+            activebackground=CARD,
+            activeforeground=WHITE,
+            relief="flat",
+            padx=22,
+            pady=8,
+            cursor="hand2",
             command=self.save_report,
             state="disabled"
         )
@@ -152,35 +935,25 @@ class NetworkDoctor:
             padx=5
         )
 
-        tk.Label(
+
+        # ---------- PROGRESS ----------
+
+        self.progress_label = tk.Label(
             self.root,
-            text="Computer Networks Engineering Project",
-            font=("Arial", 9)
-        ).pack(
-            side="bottom",
-            pady=10
+            text="Ready to diagnose your network.",
+            font=("Segoe UI", 9),
+            bg=BG,
+            fg=MUTED
         )
 
-    def create_card(self, title, value):
-
-        frame = tk.Frame(self.root)
-        frame.pack(pady=2)
-
-        label = tk.Label(
-            frame,
-            text=f"{title}: {value}",
-            font=("Arial", 11),
-            width=50,
-            anchor="w"
+        self.progress_label.pack(
+            pady=15
         )
 
-        label.pack()
 
-        return label
-
-    # --------------------------------------------------
-    # Start diagnosis
-    # --------------------------------------------------
+    # ========================================================
+    # DIAGNOSIS
+    # ========================================================
 
     def start_diagnosis(self):
 
@@ -188,17 +961,26 @@ class NetworkDoctor:
             state="disabled"
         )
 
+        self.info_button.config(
+            state="disabled"
+        )
+
+        self.trace_button.config(
+            state="disabled"
+        )
+
+        self.diagnosis_button.config(
+            state="disabled"
+        )
+
         self.save_button.config(
             state="disabled"
         )
 
-        self.health_score.config(
-            text="..."
+        self.progress_label.config(
+            text="Running network diagnostics..."
         )
 
-        self.health_status.config(
-            text="Running diagnostics..."
-        )
 
         thread = threading.Thread(
             target=self.run_diagnosis,
@@ -207,234 +989,295 @@ class NetworkDoctor:
 
         thread.start()
 
-    # --------------------------------------------------
-    # Progress
-    # --------------------------------------------------
-
-    def update_progress(self, message):
-
-        self.root.after(
-            0,
-            lambda: self.progress_label.config(
-                text=message
-            )
-        )
-
-    # --------------------------------------------------
-    # Run tests
-    # --------------------------------------------------
 
     def run_diagnosis(self):
 
         results = {}
 
-        # Internet
+
         self.update_progress(
-            "Testing internet connectivity..."
+            "Checking internet connectivity..."
         )
 
         results["internet"] = check_internet()
 
-        # Ping
+
         self.update_progress(
-            "Testing latency and packet loss..."
+            "Measuring latency and packet loss..."
         )
 
-        results["ping"] = ping_host(
-            "8.8.8.8",
-            5
-        )
+        results["ping"] = ping_host()
 
-        # DNS
+
         self.update_progress(
             "Testing DNS resolution..."
         )
 
-        results["dns"] = dns_test(
-            "example.com"
-        )
+        results["dns"] = dns_test()
 
-        # Gateway
+
         self.update_progress(
-            "Detecting default gateway..."
+            "Checking default gateway..."
         )
 
         gateway = get_gateway()
 
-        results["gateway"] = gateway
-
-        self.update_progress(
-            "Testing gateway..."
-        )
-
-        results["gateway_latency"] = ping_gateway(
+        results["gateway"] = gateway_ping(
             gateway
         )
 
-        # TCP
+
         self.update_progress(
             "Testing TCP connectivity..."
         )
 
-        results["tcp"] = {
+        results["tcp"] = tcp_test()
 
-            "HTTPS": tcp_test(
-                "google.com",
-                443
-            ),
 
-            "DNS": tcp_test(
-                "8.8.8.8",
-                53
-            )
-        }
-
-        # Basic interface information
-        results["interface"] = {
-            "hostname": self.root.winfo_toplevel().title(),
-            "local_ip": "Detected by network tests"
-        }
-
-        # Score
         self.update_progress(
-            "Calculating network health..."
+            "Collecting network information..."
         )
+
+        results["interface"] = (
+            get_interface_info()
+        )
+
 
         results["score"] = calculate_score(
             results
         )
 
-        # Diagnosis
-        results["diagnosis"] = generate_diagnosis(
-            results
+
+        results["diagnosis"] = (
+            generate_diagnosis(
+                results
+            )
         )
 
+
         self.results = results
+
 
         self.root.after(
             0,
             self.display_results
         )
 
-    # --------------------------------------------------
-    # Display results
-    # --------------------------------------------------
+
+    def update_progress(self, text):
+
+        self.root.after(
+            0,
+            lambda: self.progress_label.config(
+                text=text
+            )
+        )
+
+
+    # ========================================================
+    # DISPLAY RESULTS
+    # ========================================================
 
     def display_results(self):
 
         results = self.results
 
-        score = results["score"]
-
-        self.health_score.config(
-            text=f"{score} / 100"
-        )
-
-        if score >= 80:
-            status = "EXCELLENT 🟢"
-
-        elif score >= 60:
-            status = "GOOD 🟢"
-
-        elif score >= 40:
-            status = "FAIR 🟡"
-
-        else:
-            status = "POOR 🔴"
-
-        self.health_status.config(
-            text=status
-        )
 
         # Internet
-        if results["internet"]["status"]:
+        if results["internet"]:
 
-            self.internet_label.config(
-                text="Internet: CONNECTED ✓"
+            self.test_labels[
+                "Internet"
+            ].config(
+                text="Internet\nConnected",
+                fg=GREEN
+            )
+
+            self.status_label.config(
+                text="●  INTERNET STATUS: CONNECTED",
+                fg=GREEN
             )
 
         else:
 
-            self.internet_label.config(
-                text="Internet: DISCONNECTED ✗"
+            self.test_labels[
+                "Internet"
+            ].config(
+                text="Internet\nDisconnected",
+                fg=RED
             )
+
+            self.status_label.config(
+                text="●  INTERNET STATUS: DISCONNECTED",
+                fg=RED
+            )
+
 
         # Latency
-        average = results["ping"].get(
-            "average"
-        )
+        latency = results["ping"]["latency"]
 
-        self.latency_label.config(
-            text=(
-                f"Latency: {average} ms"
-                if average is not None
-                else "Latency: Unavailable"
-            )
-        )
+        if latency is not None:
 
-        # Packet loss
-        loss = results["ping"].get(
-            "packet_loss"
-        )
-
-        self.packet_label.config(
-            text=(
-                f"Packet Loss: {loss}%"
-                if loss is not None
-                else "Packet Loss: Unavailable"
-            )
-        )
-
-        # DNS
-        dns_time = results["dns"].get(
-            "time"
-        )
-
-        self.dns_label.config(
-            text=(
-                f"DNS: {dns_time} ms"
-                if dns_time is not None
-                else "DNS: Unavailable"
-            )
-        )
-
-        # Gateway
-        gateway = results["gateway"]
-        gateway_latency = results["gateway_latency"]
-
-        if gateway_latency is not None:
-
-            self.gateway_label.config(
-                text=(
-                    f"Gateway: {gateway} "
-                    f"({gateway_latency} ms)"
-                )
+            self.test_labels[
+                "Latency"
+            ].config(
+                text=f"Latency\n{latency} ms",
+                fg=GREEN if latency <= 100 else YELLOW
             )
 
         else:
 
-            self.gateway_label.config(
-                text=f"Gateway: {gateway}"
+            self.test_labels[
+                "Latency"
+            ].config(
+                text="Latency\nUnavailable",
+                fg=RED
             )
 
+
+        # Packet loss
+        loss = results["ping"]["packet_loss"]
+
+        if loss is not None:
+
+            self.test_labels[
+                "Packet Loss"
+            ].config(
+                text=f"Packet Loss\n{loss}%",
+                fg=GREEN if loss <= 2 else YELLOW
+            )
+
+        else:
+
+            self.test_labels[
+                "Packet Loss"
+            ].config(
+                text="Packet Loss\nUnavailable",
+                fg=RED
+            )
+
+
+        # DNS
+        if results["dns"]["status"]:
+
+            self.test_labels[
+                "DNS"
+            ].config(
+                text=(
+                    f"DNS\n"
+                    f"{results['dns']['response_time']} ms"
+                ),
+                fg=GREEN
+            )
+
+        else:
+
+            self.test_labels[
+                "DNS"
+            ].config(
+                text="DNS\nFailed",
+                fg=RED
+            )
+
+
+        # Gateway
+        if results["gateway"]["status"]:
+
+            self.test_labels[
+                "Gateway"
+            ].config(
+                text="Gateway\nReachable",
+                fg=GREEN
+            )
+
+        else:
+
+            self.test_labels[
+                "Gateway"
+            ].config(
+                text="Gateway\nUnavailable",
+                fg=RED
+            )
+
+
         # TCP
-        tcp_results = results["tcp"]
+        if results["tcp"]["status"]:
 
-        tcp_ok = sum(
-            1
-            for test in tcp_results.values()
-            if test["success"]
+            self.test_labels[
+                "TCP Services"
+            ].config(
+                text=(
+                    f"TCP Services\n"
+                    f"Connected"
+                ),
+                fg=GREEN
+            )
+
+        else:
+
+            self.test_labels[
+                "TCP Services"
+            ].config(
+                text="TCP Services\nFailed",
+                fg=RED
+            )
+
+
+        # Score
+        score = results["score"]
+
+
+        if score >= 80:
+
+            rating = "EXCELLENT"
+            score_color = GREEN
+
+        elif score >= 60:
+
+            rating = "GOOD"
+            score_color = BLUE
+
+        elif score >= 40:
+
+            rating = "FAIR"
+            score_color = YELLOW
+
+        else:
+
+            rating = "POOR"
+            score_color = RED
+
+
+        self.score_label.config(
+            text=f"{score} / 100",
+            fg=score_color
         )
 
-        self.tcp_label.config(
-            text=f"TCP Services: {tcp_ok}/2 reachable"
+
+        self.rating_label.config(
+            text=rating,
+            fg=score_color
         )
+
 
         self.progress_label.config(
-            text="Diagnosis complete ✓"
+            text="✓ Diagnosis completed successfully."
         )
 
+
         self.start_button.config(
+            state="normal"
+        )
+
+        self.info_button.config(
+            state="normal"
+        )
+
+        self.trace_button.config(
+            state="normal"
+        )
+
+        self.diagnosis_button.config(
             state="normal"
         )
 
@@ -442,15 +1285,221 @@ class NetworkDoctor:
             state="normal"
         )
 
-        self.show_diagnosis()
 
-    # --------------------------------------------------
-    # Diagnosis window
-    # --------------------------------------------------
+    # ========================================================
+    # NETWORK INFORMATION
+    # ========================================================
+
+    def show_network_info(self):
+
+        info = get_interface_info()
+
+
+        window = tk.Toplevel(
+            self.root
+        )
+
+        window.title(
+            "Network Information"
+        )
+
+        window.geometry(
+            "560x400"
+        )
+
+        window.configure(
+            bg=BG
+        )
+
+
+        tk.Label(
+            window,
+            text="🌐  NETWORK INFORMATION",
+            font=("Segoe UI", 20, "bold"),
+            bg=BG,
+            fg=WHITE
+        ).pack(
+            pady=25
+        )
+
+
+        details = [
+            ("Hostname", info["hostname"]),
+            ("Operating System", info["operating_system"]),
+            ("Local IPv4", info["local_ip"]),
+            ("Default Gateway", info["gateway"])
+        ]
+
+
+        for name, value in details:
+
+            card = tk.Frame(
+                window,
+                bg=CARD_LIGHT
+            )
+
+            card.pack(
+                fill="x",
+                padx=45,
+                pady=6
+            )
+
+
+            tk.Label(
+                card,
+                text=name,
+                font=("Segoe UI", 10, "bold"),
+                bg=CARD_LIGHT,
+                fg=MUTED,
+                width=20,
+                anchor="w"
+            ).pack(
+                side="left",
+                padx=15,
+                pady=12
+            )
+
+
+            tk.Label(
+                card,
+                text=value,
+                font=("Segoe UI", 10),
+                bg=CARD_LIGHT,
+                fg=WHITE,
+                anchor="w"
+            ).pack(
+                side="left",
+                padx=10
+            )
+
+
+    # ========================================================
+    # TRACEROUTE
+    # ========================================================
+
+    def run_traceroute(self):
+
+        self.trace_button.config(
+            state="disabled"
+        )
+
+
+        window = tk.Toplevel(
+            self.root
+        )
+
+        window.title(
+            "IPv4 Network Traceroute"
+        )
+
+        window.geometry(
+            "800x570"
+        )
+
+        window.configure(
+            bg=BG
+        )
+
+
+        tk.Label(
+            window,
+            text="🛣  NETWORK TRACEROUTE",
+            font=("Segoe UI", 20, "bold"),
+            bg=BG,
+            fg=WHITE
+        ).pack(
+            pady=(20, 5)
+        )
+
+
+        tk.Label(
+            window,
+            text=(
+                "Tracing IPv4 route to Google's public DNS "
+                "server — 8.8.8.8"
+            ),
+            font=("Segoe UI", 10),
+            bg=BG,
+            fg=MUTED
+        ).pack(
+            pady=(0, 15)
+        )
+
+
+        text_box = tk.Text(
+            window,
+            font=("Consolas", 10),
+            bg="#020617",
+            fg="#CBD5E1",
+            insertbackground=WHITE,
+            relief="flat",
+            padx=15,
+            pady=15
+        )
+
+        text_box.pack(
+            fill="both",
+            expand=True,
+            padx=20,
+            pady=10
+        )
+
+
+        text_box.insert(
+            "end",
+            "Starting IPv4 traceroute...\n\n"
+        )
+
+
+        def worker():
+
+            output = traceroute(
+                "8.8.8.8"
+            )
+
+            self.root.after(
+                0,
+                lambda: finish(output)
+            )
+
+
+        def finish(output):
+
+            text_box.delete(
+                "1.0",
+                "end"
+            )
+
+            text_box.insert(
+                "end",
+                output
+            )
+
+            self.trace_button.config(
+                state="normal"
+            )
+
+
+        threading.Thread(
+            target=worker,
+            daemon=True
+        ).start()
+
+
+    # ========================================================
+    # DIAGNOSIS WINDOW
+    # ========================================================
 
     def show_diagnosis(self):
 
-        diagnosis = self.results["diagnosis"]
+        if not self.results:
+            return
+
+
+        diagnosis = self.results[
+            "diagnosis"
+        ]
+
 
         window = tk.Toplevel(
             self.root
@@ -461,97 +1510,106 @@ class NetworkDoctor:
         )
 
         window.geometry(
-            "650x600"
+            "700x650"
         )
 
-        tk.Label(
-            window,
-            text="🩺 NETWORK DIAGNOSIS",
-            font=("Arial", 20, "bold")
-        ).pack(pady=20)
+        window.configure(
+            bg=BG
+        )
+
 
         tk.Label(
             window,
-            text=diagnosis["primary"],
-            font=("Arial", 14, "bold"),
-            wraplength=550
-        ).pack(pady=10)
+            text="🩺  NETWORK DIAGNOSIS",
+            font=("Segoe UI", 22, "bold"),
+            bg=BG,
+            fg=WHITE
+        ).pack(
+            pady=20
+        )
 
-        tk.Label(
-            window,
-            text="Detected Issues",
-            font=("Arial", 13, "bold")
-        ).pack(pady=(20, 5))
 
-        if diagnosis["problems"]:
+        sections = [
+            (
+                "Problems Detected",
+                diagnosis["problems"],
+                RED
+            ),
+            (
+                "Possible Causes",
+                diagnosis["causes"],
+                YELLOW
+            ),
+            (
+                "Recommended Actions",
+                diagnosis["recommendations"],
+                GREEN
+            )
+        ]
 
-            for problem in diagnosis["problems"]:
+
+        for title, items, color in sections:
+
+            tk.Label(
+                window,
+                text=title,
+                font=("Segoe UI", 13, "bold"),
+                bg=BG,
+                fg=color
+            ).pack(
+                anchor="w",
+                padx=35,
+                pady=(12, 5)
+            )
+
+
+            for item in items:
 
                 tk.Label(
                     window,
-                    text="• " + problem,
-                    font=("Arial", 11),
-                    wraplength=550,
+                    text="• " + item,
+                    font=("Segoe UI", 10),
+                    bg=BG,
+                    fg=TEXT,
+                    wraplength=620,
                     justify="left"
                 ).pack(
                     anchor="w",
                     padx=50,
-                    pady=2
+                    pady=4
                 )
 
-        else:
 
-            tk.Label(
-                window,
-                text="✓ No major problems detected.",
-                font=("Arial", 11)
-            ).pack()
-
-        tk.Label(
-            window,
-            text="Recommendations",
-            font=("Arial", 13, "bold")
-        ).pack(pady=(25, 5))
-
-        for recommendation in diagnosis[
-            "recommendations"
-        ]:
-
-            tk.Label(
-                window,
-                text="✓ " + recommendation,
-                font=("Arial", 11),
-                wraplength=550,
-                justify="left"
-            ).pack(
-                anchor="w",
-                padx=50,
-                pady=2
-            )
-
-    # --------------------------------------------------
-    # Save report
-    # --------------------------------------------------
+    # ========================================================
+    # SAVE REPORT
+    # ========================================================
 
     def save_report(self):
 
         if not self.results:
             return
 
+
         filename = filedialog.asksaveasfilename(
-
+            title="Save Network Report",
             defaultextension=".json",
-
             filetypes=[
-                ("JSON Report", "*.json"),
-                ("Text Report", "*.txt")
-            ],
-
-            initialfile="network_doctor_report"
+                ("JSON files", "*.json"),
+                ("Text files", "*.txt")
+            ]
         )
+
 
         if not filename:
             return
+
+
+        report = {
+            "application": "Network Doctor",
+            "generated_at": datetime.now().isoformat(),
+            "results": self.results
+        }
+
 
         try:
 
@@ -564,7 +1622,7 @@ class NetworkDoctor:
                 ) as file:
 
                     json.dump(
-                        self.results,
+                        report,
                         file,
                         indent=4
                     )
@@ -578,124 +1636,79 @@ class NetworkDoctor:
                 ) as file:
 
                     file.write(
-                        self.create_text_report()
+                        "NETWORK DOCTOR REPORT\n"
                     )
 
+                    file.write(
+                        "=" * 55 + "\n\n"
+                    )
+
+                    file.write(
+                        f"Generated: "
+                        f"{report['generated_at']}\n\n"
+                    )
+
+                    file.write(
+                        f"Network Health: "
+                        f"{self.results['score']}/100\n\n"
+                    )
+
+                    file.write(
+                        f"Internet: "
+                        f"{self.results['internet']}\n"
+                    )
+
+                    file.write(
+                        f"Latency: "
+                        f"{self.results['ping']['latency']} ms\n"
+                    )
+
+                    file.write(
+                        f"Packet Loss: "
+                        f"{self.results['ping']['packet_loss']}%\n"
+                    )
+
+                    file.write(
+                        f"DNS: "
+                        f"{self.results['dns']['status']}\n"
+                    )
+
+                    file.write(
+                        f"Gateway: "
+                        f"{self.results['interface']['gateway']}\n"
+                    )
+
+                    file.write(
+                        f"Local IP: "
+                        f"{self.results['interface']['local_ip']}\n"
+                    )
+
+
             messagebox.showinfo(
-                "Network Doctor",
-                "Report saved successfully! ✓"
+                "Report Saved",
+                "Your network diagnostic report "
+                "was saved successfully."
             )
 
-        except Exception as error:
+
+        except Exception as e:
 
             messagebox.showerror(
-                "Error",
-                f"Could not save report:\n{error}"
+                "Save Error",
+                f"Could not save report:\n{e}"
             )
 
-    def create_text_report(self):
 
-        results = self.results
-        diagnosis = results["diagnosis"]
-
-        report = []
-
-        report.append(
-            "===================================="
-        )
-
-        report.append(
-            "        NETWORK DOCTOR REPORT"
-        )
-
-        report.append(
-            "===================================="
-        )
-
-        report.append(
-            f"Generated: {datetime.now()}"
-        )
-
-        report.append("")
-
-        report.append(
-            f"Health Score: {results['score']}/100"
-        )
-
-        report.append("")
-
-        report.append("NETWORK TESTS")
-        report.append("------------------------------------")
-
-        report.append(
-            f"Internet: {results['internet']['status']}"
-        )
-
-        report.append(
-            f"Average Latency: "
-            f"{results['ping'].get('average')} ms"
-        )
-
-        report.append(
-            f"Packet Loss: "
-            f"{results['ping'].get('packet_loss')}%"
-        )
-
-        report.append(
-            f"DNS Response: "
-            f"{results['dns'].get('time')} ms"
-        )
-
-        report.append(
-            f"Gateway: {results['gateway']}"
-        )
-
-        report.append(
-            f"Gateway Latency: "
-            f"{results['gateway_latency']} ms"
-        )
-
-        report.append("")
-
-        report.append("DIAGNOSIS")
-        report.append("------------------------------------")
-
-        report.append(
-            diagnosis["primary"]
-        )
-
-        report.append("")
-
-        report.append("PROBLEMS")
-
-        for problem in diagnosis["problems"]:
-            report.append(
-                "- " + problem
-            )
-
-        report.append("")
-
-        report.append("RECOMMENDATIONS")
-
-        for recommendation in diagnosis[
-            "recommendations"
-        ]:
-
-            report.append(
-                "- " + recommendation
-            )
-
-        return "\n".join(report)
-
-
-# --------------------------------------------------
-# APPLICATION START
-# --------------------------------------------------
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
 
     root = tk.Tk()
 
-    app = NetworkDoctor(root)
+    app = NetworkDoctor(
+        root
+    )
 
     root.mainloop()
